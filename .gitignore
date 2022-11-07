@@ -1,0 +1,8 @@
+/data/*.npy
+/data/*.zip
+/data/*.pt
+/data/*.pkl
+__pycache__
+star/__pycache__
+star/*.npz
+tests
