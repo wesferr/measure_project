@@ -236,7 +236,7 @@ class CurveGenerator():
 def get_all_curves(selected_subjects, selected_measures, template, device):
     tcenter = lambda a: tc.FloatTensor(a).to('cuda')
     results = dict()
-    for gender in ['female']:
+    for gender in ['female', 'male']:
         
         print(f"PROCESSING {gender.upper()}")
         bodies = tc.load(f'data/{gender}_bodies_t.pt')
@@ -317,7 +317,7 @@ def select_better(selected_subjects, selected_measures, device):
         'thigh_girth': 2, # 5.3.20
     }
 
-    for gender in ['female']:
+    for gender in ['female', 'male']:
         bodies = tc.load(f'./data/{gender}_bodies_t.pt')
         body = bodies[selected_subjects[gender]]
         body_min = body[:,1].min()
