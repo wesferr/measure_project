@@ -2,7 +2,8 @@
 /data/*.zip
 /data/*.pt
 /data/*.pkl
-/data/MOVE4D
+/data/MOVE4D/female/*
+/data/MOVE4D/male/*
 __pycache__
 star/__pycache__
 star/*.npz
