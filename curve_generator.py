@@ -233,81 +233,72 @@ class CurveGenerator():
         return curves_blocks, all_measures, all_positions
 
 
-def get_all_curves(selected_subjects, selected_measures, template, device):
-    tcenter = lambda a: tc.FloatTensor(a).to('cuda')
-    results = dict()
-    for gender in ['female', 'male']:
-        
-        print(f"PROCESSING {gender.upper()}")
-        bodies = tc.load(f'data/{gender}_bodies_t.pt')
-        poses = np.load(f'data/{gender}_poses.npy')
-        body = bodies[selected_subjects[gender]]
+def get_all_curves(selected_body, selected_measure, template, device):
 
-        CurveUtils.save_obj('body.obj', body, template+1)
+    tcenter = lambda a: tc.FloatTensor(a).to(device)
 
-        body_measures = selected_measures[gender]/1000
-        body_portion = body_measures['height']/8
+    body_measures = selected_measure/1000
+    body_portion = body_measures['stature']/8
 
-        body_min = body[:,1].min()
-        body_width = body[:,0].max() - body[:,0].min()
-        
-        # bust planes box
-        height = body_portion
-        center = (0, body_min + (body_portion*5.1) + (height/2), 0)
-        width = body_measures['bust_chest_girth']/tc.pi*1.3
-        bust_box = BBox(width=width, height=height, center=tcenter(center))
-        
-        # torso planes box
-        width = body_measures['hip_girth']/tc.pi*1.3
-        height = body_portion*1.5
-        center = (0, body_min + (body_portion*3.75) + (height/2), 0)
-        torso_box = BBox(width=width, height=height, center=tcenter(center))
-        
-        # leg planes box
-        width = body_width/2 #body_measures['thigh_girth']/tc.pi*1.2
-        height = body_portion*3
-        to_right = body_width/4# body_measures['hip_girth']/tc.pi/3
-        center = (-to_right, body_min + body_portion + (height/2) ,0)
-        leg_box = BBox(width=width, height=height, center=tcenter(center))
-        
-        # arm planes box
-        width = body_portion*4
-        height = body_width
-        c = body_measures['bust_chest_girth']/tc.pi/2*1.1
-        center = (-c-(width/2), body_portion*5.5,0)
-        arm_box = BBox(width=width, height=height, center=tcenter(center))
-        
-        # neck planes box
-        height = body_portion
-        width = body_portion
-        center = (0, body_min + (body_portion*6.5) + (height/2), 0)
-        neck_box = BBox(width=width, height=height, center=tcenter(center))
-        neck_rotation_matrix = euler_angles_to_matrix(tc.tensor([-17.5*(tc.pi/180),0,0]).to('cuda'), "XYZ")
-        neck_plane_normal = tc.FloatTensor([0.0,1.0,0.0]).to(device) @ neck_rotation_matrix
-        
-        axes = [
-            (1,[0.0,1.0,0.0], 'b'),
-            (1,[0.0,1.0,0.0], 't'),
-            (1,[0.0,1.0,0.0], 'l'),
-            (0,[1.0,0.0,0.0], 'a'),
-            (1,neck_plane_normal, 'n')
-        ]
+    body_min = selected_body[:,1].min()
+    body_width = selected_body[:,0].max() - selected_body[:,0].min()
+    
+    # bust planes box
+    height = body_portion
+    center = (0, body_min + (body_portion*5.1) + (height/2), 0)
+    width = body_measures['bust_chest_girth']/tc.pi*1.3
+    bust_box = BBox(width=width, height=height, center=tcenter(center))
+    
+    # torso planes box
+    width = body_measures['hip_girth']/tc.pi*1.3
+    height = body_portion*1.5
+    center = (0, body_min + (body_portion*3.75) + (height/2), 0)
+    torso_box = BBox(width=width, height=height, center=tcenter(center))
+    
+    # leg planes box
+    width = body_width/2 #body_measures['thigh_girth']/tc.pi*1.2
+    height = body_portion*3
+    to_right = body_width/4# body_measures['hip_girth']/tc.pi/3
+    center = (-to_right, body_min + body_portion + (height/2) ,0)
+    leg_box = BBox(width=width, height=height, center=tcenter(center))
+    
+    # arm planes box
+    width = body_portion*4
+    height = body_width
+    c = body_measures['bust_chest_girth']/tc.pi/2*1.1
+    center = (-c-(width/2), body_portion*5.5,0)
+    arm_box = BBox(width=width, height=height, center=tcenter(center))
+    
+    # neck planes box
+    height = body_portion
+    width = body_portion
+    center = (0, body_min + (body_portion*6.5) + (height/2), 0)
+    neck_box = BBox(width=width, height=height, center=tcenter(center))
+    neck_rotation_matrix = euler_angles_to_matrix(tc.tensor([-17.5*(tc.pi/180),0,0]).to('cuda'), "XYZ")
+    neck_plane_normal = tc.FloatTensor([0.0,1.0,0.0]).to(device) @ neck_rotation_matrix
+    
+    axes = [
+        (1,[0.0,1.0,0.0], 'b'),
+        (1,[0.0,1.0,0.0], 't'),
+        (1,[0.0,1.0,0.0], 'l'),
+        (0,[1.0,0.0,0.0], 'a'),
+        (1,neck_plane_normal, 'n')
+    ]
 
 
-        bounding_boxes = [
-            bust_box,
-            torso_box,
-            leg_box,
-            arm_box,
-            neck_box,
-        ]
-        
-        generator = CurveGenerator(vertices=body, faces=template, body_measures=selected_measures[gender])
-        result = generator.computate(axes, bounding_boxes)
-        results[gender] = result
-    return results
+    bounding_boxes = [
+        bust_box,
+        torso_box,
+        leg_box,
+        arm_box,
+        neck_box,
+    ]
+    
+    generator = CurveGenerator(vertices=selected_body, faces=template, body_measures=selected_measure)
+    result = generator.computate(axes, bounding_boxes)
+    return result
 
-def select_better(selected_subjects, selected_measures, device):
+def select_better(result, selected_body, selected_measure, device):
     curve_index = {
         'neck_girth':4, # 5.3.2
         'bust_chest_girth': 0, # 5.3.4
@@ -317,45 +308,31 @@ def select_better(selected_subjects, selected_measures, device):
         'thigh_girth': 2, # 5.3.20
     }
 
-    for gender in ['female', 'male']:
-        bodies = tc.load(f'./data/{gender}_bodies_t.pt')
-        body = bodies[selected_subjects[gender]]
-        body_min = body[:,1].min()
-        body_max = body[:,1].max()
+    body_min = selected_body[:,1].min()
+    body_max = selected_body[:,1].max()
 
-        result = tc.load(f"./data/{gender}_result.zip")
-        curves = result[0]
-        measures = result[1]
-        positions = result[2]
+    curves = result[0]
+    measures = result[1]
+    positions = result[2]
 
-        all_positions = []
-        all_measures = []
-        best_curves = []
-        for measure in curve_index.keys():
-            measures_index = tc.FloatTensor(measures[curve_index[measure]]).to(device)
-            diff = abs(measures_index - selected_measures[gender][measure]/10)
-            best = diff.argmin()
-            all_positions.append(positions[curve_index[measure]][best])
-            all_measures.append(measures_index[best].cpu().numpy())
-            best_curves.append(curves[curve_index[measure]][best])
+    all_positions = []
+    all_measures = []
+    best_curves = []
+    for measure in curve_index.keys():
+        measures_index = tc.FloatTensor(measures[curve_index[measure]]).to(device)
+        diff = abs(measures_index - selected_measure[measure]/10)
+        best = diff.argmin()
+        all_positions.append(positions[curve_index[measure]][best])
+        all_measures.append(measures_index[best].cpu().numpy())
+        best_curves.append(curves[curve_index[measure]][best])
 
-        height = body_max - body_min
-        all_measures.append(height.cpu().numpy()*100)
+    height = body_max - body_min
+    all_measures.append(height.cpu().numpy()*100)
 
-        # waist_height = all_positions[2].mean(0)[1] - body_min
-        # all_measures.append(waist_height.cpu().numpy()*100)
-
-        # bust_height = all_positions[1].mean(0)[1] - body_min
-        # all_measures.append(bust_height.cpu().numpy()*100)
-            
-
-        data = {
-            'original': selected_measures[gender][list(curve_index.keys())+['height']]/10,
-            'measured': all_measures,
-            'error(mm)': abs(selected_measures[gender][list(curve_index.keys())+['height']]/10 - all_measures)*10
-        }
-        data = pd.DataFrame(data)
-        print(f"\n{gender.upper()}")
-        print(data)
-        
-        tc.save(best_curves, f'data/{gender}_best_curves.zip')
+    data = {
+        'original': selected_measure[list(curve_index.keys())+['stature']]/10,
+        'measured': all_measures,
+        'error(mm)': abs(selected_measure[list(curve_index.keys())+['stature']]/10 - all_measures)*10
+    }
+    data = pd.DataFrame(data)
+    return best_curves, data

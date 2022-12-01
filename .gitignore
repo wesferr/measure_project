@@ -2,7 +2,9 @@
 /data/*.zip
 /data/*.pt
 /data/*.pkl
+/data/MOVE4D
 __pycache__
 star/__pycache__
 star/*.npz
 tests
+/BKP

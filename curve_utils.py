@@ -54,10 +54,16 @@ class CurveUtils():
         height = abs(floor - positions.mean(axis=0)[1])
         return height * 100
 
+    def ray_plane_colision(origins, vectors, polygons):
+        n, d, _, _, _ = CurveUtils.define_planes(polygons, 1)
+        P, pfilter, _ = CurveUtils.calculate_colision(origins, vectors, n, d)
+        rfilter = tc.linalg.norm(vectors, axis=1)>tc.linalg.norm(P-origins, axis=1)
+        return P[pfilter&rfilter]
 
-    def ray_trace(vertices, faces, positions):
+    def ray_polygon_cosilion(vertices, faces, positions):
         nrays, centroid, nvectors = CurveUtils.define_vectors(faces, positions)
-        n, d, p0, p1, p2 = CurveUtils.define_planes(vertices, faces, nrays)
+        polygons = vertices[faces]
+        n, d, p0, p1, p2 = CurveUtils.define_planes(polygons, nrays)
         P, pfilter, t = CurveUtils.calculate_colision(centroid, nvectors, n, d)
         baricentric, bfilter = CurveUtils.baricentric_coordinates(p0, p1, p2, P)
         result = CurveUtils.get_closest_point(P, t, pfilter, bfilter, positions)
@@ -78,8 +84,7 @@ class CurveUtils():
         nvectors = vectors.repeat_interleave(faces.shape[0], 0)
         return nrays, centroid, nvectors
 
-    def define_planes(vertices, faces, nrays):
-        polygons = vertices[faces]
+    def define_planes(polygons, nrays):
         p0 = polygons[:,0].repeat(nrays, 1)
         p1 = polygons[:,1].repeat(nrays, 1)
         p2 = polygons[:,2].repeat(nrays, 1)
@@ -89,10 +94,14 @@ class CurveUtils():
         return n, d, p0, p1, p2
 
     def calculate_colision(origin, vectors, normals, distances):
-        nd = (normals*vectors).sum(1)
-        pn = (origin*normals).sum(1)
-        t = -((pn+distances)/nd)
-        P = origin + (vectors * t.unsqueeze(1))
+        nd =(vectors@normals.T)
+        pn = (origin@normals.T)
+        t = -((pn+distances.unsqueeze(0))/nd)
+        P2 = vectors.repeat(10000,1) * t.flatten().unsqueeze(1)
+        # print(vectors.repeat(100,1).shape, t.flatten().unsqueeze(1).shape)
+        # print(t.unsqueeze(1).shape, vectors.unsqueeze(2).shape)
+        # P = t.unsqueeze(2) @ vectors.unsqueeze(1)
+        # print(P.shape, P.sum(), P2.sum(), P2.shape)
         return P, (t >= 0), t
 
     def baricentric_coordinates(a, b, c, p):
