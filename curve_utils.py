@@ -54,22 +54,40 @@ class CurveUtils():
         height = abs(floor - positions.mean(axis=0)[1])
         return height * 100
 
-    def ray_plane_colision(origins, vectors, polygons):
-        n, d, _, _, _ = CurveUtils.define_planes(polygons, 1)
-        P, pfilter, _ = CurveUtils.calculate_colision(origins, vectors, n, d)
-        rfilter = tc.linalg.norm(vectors, axis=1)>tc.linalg.norm(P-origins, axis=1)
-        return P[pfilter&rfilter]
+    def calculate_angle(vectors, axis):
+        inner_product = (vectors * axis.unsqueeze(0)).sum(dim=1)
+        a_norm = tc.linalg.norm(vectors,axis=1)
+        b_norm = tc.linalg.norm(axis)
+        cos = inner_product / (2 * a_norm * b_norm)
+        angle = tc.acos(cos)
+        return angle
 
-    def ray_polygon_cosilion(vertices, faces, positions):
-        nrays, centroid, nvectors = CurveUtils.define_vectors(faces, positions)
-        polygons = vertices[faces]
-        n, d, p0, p1, p2 = CurveUtils.define_planes(polygons, nrays)
+    def plane_triangle_colision(planes, triangles):
+        centroid = tc.row_stack([triangles[:,0], triangles[:,1], triangles[:,2], triangles[:,0], triangles[:,1], triangles[:,2]])
+        vectors = tc.row_stack([
+            triangles[:,1] - triangles[:,0],
+            triangles[:,0] - triangles[:,1],
+            triangles[:,0] - triangles[:,2],
+            triangles[:,2] - triangles[:,0],
+            triangles[:,2] - triangles[:,1],
+            triangles[:,1] - triangles[:,2],
+        ])
+        n,d,p0,p1,p2 = CurveUtils.define_planes(planes)
+        P, _, _ = CurveUtils.calculate_colision(centroid, vectors, n, d)
+        baricentric, triangles_filter = CurveUtils.baricentric_coordinates(triangles[:,0].repeat(6,1), triangles[:,1].repeat(6,1), triangles[:,2].repeat(6,1), P+centroid)
+        baricentric, planes_filter = CurveUtils.baricentric_coordinates(p0, p1, p2, P+centroid)
+        uniqueness_filter = (P+centroid).unique(dim=0)
+        return (P+centroid)[triangles_filter&planes_filter]
+        
+    def ray_polygon_cosilion(polygons, positions):
+        centroid, nvectors = CurveUtils.define_vectors(positions)
+        n, d, p0, p1, p2 = CurveUtils.define_planes(polygons)
         P, pfilter, t = CurveUtils.calculate_colision(centroid, nvectors, n, d)
-        baricentric, bfilter = CurveUtils.baricentric_coordinates(p0, p1, p2, P)
-        result = CurveUtils.get_closest_point(P, t, pfilter, bfilter, positions)
+        baricentric, bfilter = CurveUtils.baricentric_coordinates(p0, p1, p2, P+centroid)
+        result = CurveUtils.get_closest_point(P+centroid, t, pfilter, bfilter)
         return result, CurveUtils.calculate_distances(result)
 
-    def define_vectors(faces, positions):
+    def define_vectors(positions):
         # project points
         ones = tc.ones(positions.shape[0]).to("cuda")
         A = tc.column_stack([positions[:,0], ones, positions[:,2]])
@@ -80,71 +98,84 @@ class CurveUtils():
         centroid = A.mean(axis=0)
         vectors = A - centroid
         vectors = vectors/tc.linalg.norm(vectors, axis=1).unsqueeze(1)
-        nrays = vectors.shape[0]
-        nvectors = vectors.repeat_interleave(faces.shape[0], 0)
-        return nrays, centroid, nvectors
+        return centroid, vectors
 
-    def define_planes(polygons, nrays):
-        p0 = polygons[:,0].repeat(nrays, 1)
-        p1 = polygons[:,1].repeat(nrays, 1)
-        p2 = polygons[:,2].repeat(nrays, 1)
+    def define_planes(polygons):
+        p0 = polygons[:,0]
+        p1 = polygons[:,1]
+        p2 = polygons[:,2]
         cross = tc.cross(p0 - p1, p0 - p2, dim=1)
         n = cross / tc.linalg.norm(cross, axis=1).unsqueeze(1)
         d = -tc.sum(p0*n, axis=1)
         return n, d, p0, p1, p2
 
     def calculate_colision(origin, vectors, normals, distances):
-        nd =(vectors@normals.T)
-        pn = (origin@normals.T)
-        t = -((pn+distances.unsqueeze(0))/nd)
-        P2 = vectors.repeat(10000,1) * t.flatten().unsqueeze(1)
-        # print(vectors.repeat(100,1).shape, t.flatten().unsqueeze(1).shape)
-        # print(t.unsqueeze(1).shape, vectors.unsqueeze(2).shape)
-        # P = t.unsqueeze(2) @ vectors.unsqueeze(1)
-        # print(P.shape, P.sum(), P2.sum(), P2.shape)
+        if origin.shape == vectors.shape:
+            nd = (normals@vectors.T)
+            pn = (normals@origin.T)
+            t = -((pn+distances.unsqueeze(1))/nd)
+            P = vectors.unsqueeze(0) * t.unsqueeze(2)
+        else:
+            nd = (vectors@normals.T)
+            pn = (origin@normals.T)
+            t = -((pn+distances.unsqueeze(0))/nd)
+            P = t.unsqueeze(2) @ vectors.unsqueeze(1)
         return P, (t >= 0), t
+
+    # def baricentric_coordinates(a, b, c, p):
+        
+    #     vab = b - a
+    #     vbc = c - b
+    #     vca = a - c
+
+    #     vap = p - a
+    #     vbp = p - b
+    #     vcp = p - c
+
+    #     cross = tc.cross(vab,vbc)
+    #     n = cross / tc.linalg.norm(cross)
+        
+    #     ABC = (n * tc.cross(vab, vbc)).sum(axis=1) / 2
+    #     ABP = (n * tc.cross(vab.unsqueeze(0), vbp)).sum(axis=2) / 2
+    #     BCP = (n * tc.cross(vbc.unsqueeze(0), vcp)).sum(axis=2) / 2
+    #     CAP = (n * tc.cross(vca.unsqueeze(0), vap)).sum(axis=2) / 2
+
+    #     w = ABP/ABC
+    #     u = BCP/ABC
+    #     v = CAP/ABC
+
+    #     test = (u>=0) & (v>=0) & (w>=0)
+
+    #     return tc.stack([u,v,w], axis=2), test
 
     def baricentric_coordinates(a, b, c, p):
         
-        vab = b - a
-        vbc = c - b
-        vca = a - c
-        
+        vab = (b - a).unsqueeze(0)
+        vac = (c - a).unsqueeze(0)
         vap = p - a
-        vbp = p - b
-        vcp = p - c
 
+        dbb = (vab * vab).sum(axis=2)
+        dbc = (vab * vac).sum(axis=2)
+        dcc = (vac * vac).sum(axis=2)
+        dpb = (vap * vab).sum(axis=2)
+        dpc = (vap * vac).sum(axis=2)
 
-        cross = tc.cross(vab,vbc)
-        n = cross / tc.linalg.norm(cross)
-        
-        ABC = (n * tc.cross(vab, vbc)).sum(axis=1) / 2
-        ABP = (n * tc.cross(vab, vbp)).sum(axis=1) / 2
-        BCP = (n * tc.cross(vbc, vcp)).sum(axis=1) / 2
-        CAP = (n * tc.cross(vca, vap)).sum(axis=1) / 2
-
-        w = ABP/ABC
-        u = BCP/ABC
-        v = CAP/ABC
+        denom = dbb * dcc - dbc * dbc
+        v = (dcc * dpb - dbc * dpc) /denom
+        w = (dbb * dpc - dbc * dpb) /denom
+        u = 1.0 - v - w
 
         test = (u>=0) & (v>=0) & (w>=0)
+        return tc.stack([u,v,w], axis=1), test
 
-        return tc.column_stack([u,v,w]), test
 
-    def get_closest_point(P, t, pfilter, bfilter, position):
-
-        psize = position.shape[0]
-        tsize = t.shape[0]//psize
-
-        tempP = P.reshape([psize, tsize, 3])
-        tempt = t.reshape([psize, tsize])
-        pfilter = pfilter.reshape([psize, tsize])
-        bfilter = bfilter.reshape([psize, tsize])
-
+    def get_closest_point(P, t, pfilter, bfilter):
         indices = tc.where(pfilter & bfilter)
-        matrix = tc.sparse_coo_tensor(tc.row_stack(indices), tempt[indices]-100).to_dense()
-        selected_indices = [indices[0].unique(), matrix.min(axis=1)[1]]
-        return tempP[selected_indices]
+        matrix = tc.sparse_coo_tensor(tc.row_stack(indices), t[indices]-100).to_dense()
+        indices = indices[0].unique()
+        best = matrix.min(axis=1)[1]
+        selected_indices = [indices, best[indices]]
+        return P[selected_indices]
 
     def generate_positions(coordinates, vertices):
         indices = coordinates[:,:3].type(tc.LongTensor)

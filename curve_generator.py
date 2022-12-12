@@ -2,6 +2,7 @@ import numpy as np
 import torch as tc
 from curve_utils import CurveUtils
 import pandas as pd
+from tqdm import tqdm as pgb
 
 from pytorch3d.transforms import euler_angles_to_matrix
 
@@ -282,9 +283,9 @@ def get_all_curves(selected_body, selected_measure, template, device):
         (1,[0.0,1.0,0.0], 't'),
         (1,[0.0,1.0,0.0], 'l'),
         (0,[1.0,0.0,0.0], 'a'),
-        (1,neck_plane_normal, 'n')
+        (1,neck_plane_normal, 'n'),
+        (0,[1.0,0.0,0.0], 'c'),
     ]
-
 
     bounding_boxes = [
         bust_box,
@@ -298,7 +299,30 @@ def get_all_curves(selected_body, selected_measure, template, device):
     result = generator.computate(axes, bounding_boxes)
     return result
 
-def select_better(result, selected_body, selected_measure, device):
+def calculate_derived(selected_body, template, best_curves, all_positions):
+    aditional_measures = []
+    aditional_positions = []
+    
+    body_min = selected_body[:,1].min()
+    body_max = selected_body[:,1].max()
+    height = body_max - body_min
+
+    mean_waist_point = all_positions[2].mean(axis=0)
+    
+    triangles = tc.FloatTensor([
+        [[ 0,mean_waist_point[1],10], [0,mean_waist_point[1],-10], [0,-10,0]]
+    ]).to('cuda')
+
+    positions = CurveUtils.plane_triangle_colision(triangles, selected_body[template])
+
+    aditional_positions.append(positions)
+    aditional_measures.append(height.cpu().numpy()*100)
+    aditional_measures.append(110)
+
+    
+    return aditional_measures, aditional_positions
+
+def select_better(result, selected_body, template, selected_measure, device):
     curve_index = {
         'neck_girth':4, # 5.3.2
         'bust_chest_girth': 0, # 5.3.4
@@ -307,9 +331,6 @@ def select_better(result, selected_body, selected_measure, device):
         'upper_arm_girth': 3, # 5.3.16
         'thigh_girth': 2, # 5.3.20
     }
-
-    body_min = selected_body[:,1].min()
-    body_max = selected_body[:,1].max()
 
     curves = result[0]
     measures = result[1]
@@ -326,13 +347,15 @@ def select_better(result, selected_body, selected_measure, device):
         all_measures.append(measures_index[best].cpu().numpy())
         best_curves.append(curves[curve_index[measure]][best])
 
-    height = body_max - body_min
-    all_measures.append(height.cpu().numpy()*100)
+
+    derived, addpositions = calculate_derived(selected_body, template, best_curves, all_positions)
+
+    all_measures.extend(derived)
 
     data = {
-        'original': selected_measure[list(curve_index.keys())+['stature']]/10,
+        'original': selected_measure[list(curve_index.keys())+['stature', 'crotch_height']]/10,
         'measured': all_measures,
-        'error(mm)': abs(selected_measure[list(curve_index.keys())+['stature']]/10 - all_measures)*10
+        'error(mm)': abs(selected_measure[list(curve_index.keys())+['stature', 'crotch_height']]/10 - all_measures)*10
     }
     data = pd.DataFrame(data)
-    return best_curves, data
+    return best_curves, data, addpositions
