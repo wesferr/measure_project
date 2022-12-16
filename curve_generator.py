@@ -43,6 +43,9 @@ class BBox():
             tc.sum(dir * self.orientation[2], axis=1) >= (-self.length/2),
         ]
         return tc.all(tc.column_stack(tests), dim=1)
+
+    def __str__(self) -> str:
+        return f"{self.center} {self.height} {self.width}"
         
 
 class CurveGenerator():
@@ -299,25 +302,30 @@ def get_all_curves(selected_body, selected_measure, template, device):
     result = generator.computate(axes, bounding_boxes)
     return result
 
-def calculate_derived(selected_body, template, best_curves, all_positions):
+def calculate_derived(selected_body, template, all_positions, device):
     aditional_measures = []
     aditional_positions = []
     
     body_min = selected_body[:,1].min()
     body_max = selected_body[:,1].max()
     height = body_max - body_min
+    aditional_measures.append(height*100)
 
+    body_center = -selected_body[:,0].mean()
+
+
+    # calculate crotch length 
     mean_waist_point = all_positions[2].mean(axis=0)
-    
     triangles = tc.FloatTensor([
-        [[ 0,mean_waist_point[1],10], [0,mean_waist_point[1],-10], [0,-10,0]]
+        [[ body_center,mean_waist_point[1],10], [body_center,mean_waist_point[1],-10], [body_center,-10,0]]
     ]).to('cuda')
+    _, coordinates = CurveUtils.plane_triangle_colision(triangles, selected_body[template], device, template)
+    positions = CurveUtils.generate_positions(coordinates=coordinates, vertices=selected_body)
+    positions, coordinates = CurveUtils.sort_curve(positions, coordinates)
+    distance = CurveUtils.calculate_distances(positions, closed=False)
 
-    positions = CurveUtils.plane_triangle_colision(triangles, selected_body[template])
-
+    aditional_measures.append(distance)
     aditional_positions.append(positions)
-    aditional_measures.append(height.cpu().numpy()*100)
-    aditional_measures.append(110)
 
     
     return aditional_measures, aditional_positions
@@ -331,6 +339,7 @@ def select_better(result, selected_body, template, selected_measure, device):
         'upper_arm_girth': 3, # 5.3.16
         'thigh_girth': 2, # 5.3.20
     }
+    curve_names = list(curve_index.keys())
 
     curves = result[0]
     measures = result[1]
@@ -339,23 +348,28 @@ def select_better(result, selected_body, template, selected_measure, device):
     all_positions = []
     all_measures = []
     best_curves = []
+
+    
     for measure in curve_index.keys():
         measures_index = tc.FloatTensor(measures[curve_index[measure]]).to(device)
         diff = abs(measures_index - selected_measure[measure]/10)
         best = diff.argmin()
         all_positions.append(positions[curve_index[measure]][best])
-        all_measures.append(measures_index[best].cpu().numpy())
+        all_measures.append(measures_index[best])
         best_curves.append(curves[curve_index[measure]][best])
 
+    derived_measures, derived_positions = calculate_derived(selected_body, template, all_positions, device)
+    all_measures.extend(derived_measures)
+    all_positions.extend(derived_positions)
 
-    derived, addpositions = calculate_derived(selected_body, template, best_curves, all_positions)
+    selected_measure_tensor = tc.FloatTensor(selected_measure[curve_names+['stature', 'crotch_length']]).to(device).cpu().numpy()
+    all_measures = tc.FloatTensor(all_measures).to(device).cpu().numpy()
 
-    all_measures.extend(derived)
 
     data = {
-        'original': selected_measure[list(curve_index.keys())+['stature', 'crotch_height']]/10,
+        'original': selected_measure_tensor/10,
         'measured': all_measures,
-        'error(mm)': abs(selected_measure[list(curve_index.keys())+['stature', 'crotch_height']]/10 - all_measures)*10
+        'error(mm)': abs(selected_measure_tensor/10 - all_measures)*10
     }
     data = pd.DataFrame(data)
-    return best_curves, data, addpositions
+    return best_curves, data
