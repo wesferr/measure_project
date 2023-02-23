@@ -273,20 +273,12 @@ def get_all_curves(selected_body, selected_measure, template, device):
     center = (-c-(width/2), body_portion*5.5,0)
     arm_box = BBox(width=width, height=height, center=tcenter(center))
     
-    # neck planes box
-    height = body_portion
-    width = body_portion
-    center = (0, body_min + (body_portion*6.5) + (height/2), 0)
-    neck_box = BBox(width=width, height=height, center=tcenter(center))
-    neck_rotation_matrix = euler_angles_to_matrix(tc.tensor([-17.5*(tc.pi/180),0,0]).to('cuda'), "XYZ")
-    neck_plane_normal = tc.FloatTensor([0.0,1.0,0.0]).to(device) @ neck_rotation_matrix
-    
     axes = [
         (1,[0.0,1.0,0.0], 'b'),
         (1,[0.0,1.0,0.0], 't'),
         (1,[0.0,1.0,0.0], 'l'),
         (0,[1.0,0.0,0.0], 'a'),
-        (1,neck_plane_normal, 'n'),
+        # (1,neck_plane_normal, 'n'),
         (0,[1.0,0.0,0.0], 'c'),
     ]
 
@@ -295,32 +287,49 @@ def get_all_curves(selected_body, selected_measure, template, device):
         torso_box,
         leg_box,
         arm_box,
-        neck_box,
+        # neck_box,
     ]
     
     generator = CurveGenerator(vertices=selected_body, faces=template, body_measures=selected_measure)
     result = generator.computate(axes, bounding_boxes)
+
+    # neck planes box
+    height = body_portion
+    width = body_portion
+    center = (0, body_min + (body_portion*6.5) + (height/2), 0)
+    neck_box = BBox(width=width, height=height, center=tcenter(center))
+
+    neck_plane_normals = []
+    for i in np.arange(0,30, 0.5):
+        neck_rotation_matrix = euler_angles_to_matrix(tc.tensor([i*(tc.pi/180),0,0]).to('cuda'), "XYZ")
+        neck_plane_normal = tc.FloatTensor([0.0,1.0,0.0]).to(device) @ neck_rotation_matrix
+        neck_plane_normals.append(neck_plane_normal)
+
+    result = generator.computate(neck_plane_normals, [neck_box])
+
     return result
 
-def calculate_derived(selected_body, template, all_positions, device):
+def calculate_derived(selected_body_t, selected_body_x, template, all_positions, device):
     aditional_measures = []
     aditional_positions = []
     
-    body_min = selected_body[:,1].min()
-    body_max = selected_body[:,1].max()
+    body_min = selected_body_t[:,1].min()
+    body_max = selected_body_t[:,1].max()
     height = body_max - body_min
     aditional_measures.append(height*100)
 
-    body_center = -selected_body[:,0].mean()
-
-
     # calculate crotch length 
     mean_waist_point = all_positions[2].mean(axis=0)
-    triangles = tc.FloatTensor([
-        [[ body_center,mean_waist_point[1],10], [body_center,mean_waist_point[1],-10], [body_center,-10,0]]
-    ]).to('cuda')
-    _, coordinates = CurveUtils.plane_triangle_colision(triangles, selected_body[template], device, template)
-    positions = CurveUtils.generate_positions(coordinates=coordinates, vertices=selected_body)
+    mean_hip_point = all_positions[3].mean(axis=0)
+
+    triangles = tc.FloatTensor([[
+        [mean_hip_point[0], mean_waist_point[1], 10],
+        [mean_hip_point[0], mean_waist_point[1],-10],
+        [mean_hip_point[0],                 -10,  0]
+    ]]).to('cuda')
+    
+    positions, coordinates = CurveUtils.plane_triangle_colision(triangles, selected_body_x[template], device, template)
+    positions = CurveUtils.generate_positions(coordinates=coordinates, vertices=selected_body_t)
     positions, coordinates = CurveUtils.sort_curve(positions, coordinates)
     distance = CurveUtils.calculate_distances(positions, closed=False)
 
@@ -330,7 +339,7 @@ def calculate_derived(selected_body, template, all_positions, device):
     
     return aditional_measures, aditional_positions
 
-def select_better(result, selected_body, template, selected_measure, device):
+def select_better(result, selected_body_t, selected_body_x, template, selected_measure, device):
     curve_index = {
         'neck_girth':4, # 5.3.2
         'bust_chest_girth': 0, # 5.3.4
@@ -358,7 +367,7 @@ def select_better(result, selected_body, template, selected_measure, device):
         all_measures.append(measures_index[best])
         best_curves.append(curves[curve_index[measure]][best])
 
-    derived_measures, derived_positions = calculate_derived(selected_body, template, all_positions, device)
+    derived_measures, derived_positions = calculate_derived(selected_body_t, selected_body_x, template, all_positions, device)
     all_measures.extend(derived_measures)
     all_positions.extend(derived_positions)
 

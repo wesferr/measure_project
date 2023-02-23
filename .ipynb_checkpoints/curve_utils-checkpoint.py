@@ -1,6 +1,5 @@
 import numpy as np
 import torch as tc
-import pandas as pd
 
 
 class CurveUtils():
@@ -45,8 +44,7 @@ class CurveUtils():
                 file.write("f {} {} {}\n".format(face[0], face[1], face[2]))
 
     def calculate_distances(positions, closed=True):
-
-        if positions.numel() <= 3:
+        if positions.numel() == 0:
             return 0
         distances = tc.cdist(positions, positions)
         if closed==True:
@@ -98,25 +96,26 @@ class CurveUtils():
         coordinates = coordinates[index]
         return positions, coordinates
         
-    def ray_polygon_colision(polygons, positions):
+    def ray_polygon_cosilion(polygons, positions):
+
+        position = []
         centroid, nvectors = CurveUtils.define_vectors(positions)
         n, d, p0, p1, p2 = CurveUtils.define_planes(polygons)
         P, pfilter, t = CurveUtils.calculate_colision(centroid, nvectors, n, d)
         baricentric, bfilter = CurveUtils.baricentric_coordinates(p0, p1, p2, P+centroid)
         result = CurveUtils.get_closest_point(P+centroid, t, pfilter, bfilter)
-        return result, CurveUtils.calculate_distances(result)
+        return result, CurveUtils.calculate_distances(result), position
 
     def define_vectors(positions):
         # project points
         ones = tc.ones(positions.shape[0]).to("cuda")
-        range = positions.max(axis=0).values - positions.min(axis=0).values
-        # lower_dimension = abs(positions).std(axis=0).argmin()
-        lower_dimension = range.argmin()
+        lower_dimension = abs(positions).std(axis=0).argmin()
         A = positions.clone()
         A[:,lower_dimension] = ones
         # A = tc.column_stack([positions[:,0], ones, positions[:,2]])
         new_y = A @ tc.linalg.solve(A.T@A, A.T@positions[:,lower_dimension])
         A[:,lower_dimension] = new_y
+
 
         # calculate centroid and vectors
         centroid = A.mean(axis=0)
@@ -203,35 +202,26 @@ class CurveUtils():
             bmin = bounding_box.center[0]-(bounding_box.width/2)
             bmax = bounding_box.center[0]+(bounding_box.width/2)
 
-        temp_pos = []
-
         height_values = tc.arange(bmin, bmax, 0.001)
         all_positions = []
         all_coordinates = []
         all_measures = []
 
-        for idx, value in enumerate(height_values):
+        for value in height_values:
 
             triangles = triangle(value).unsqueeze(0)
             positions, coordinates = CurveUtils.plane_triangle_colision(triangles, body[template], device, template)
+
             filter = bounding_box.check_inside(positions)
-            tc.set_printoptions(precision=2, sci_mode=False)
             positions, coordinates = positions[filter], coordinates[filter]
 
-            if idx%20 == 0:
-                temp_pos.extend(positions.cpu().numpy())
-
             positions, coordinates = CurveUtils.sort_curve(positions, coordinates)
-
             measures = CurveUtils.calculate_distances(positions, closed)
+        
 
             all_positions.append(positions)
             all_coordinates.append(coordinates)
             all_measures.append(measures)
-        
-
-        # CurveUtils.save_obj("teste.obj", temp_pos)
-        # raise Exception
         return all_coordinates, all_measures, all_positions
 
     def get_curves(selected_body, selected_measure, template, device):
@@ -247,25 +237,25 @@ class CurveUtils():
         # neck planes box
         from pytorch3d.transforms import euler_angles_to_matrix
         height = body_portion
-        width = body_portion
-        center = (0, body_min + (body_portion*6.25) + (height/2), 0)
+        width = (body_portion+1)
+        center = (0, body_min + (body_portion*6.5) + (height/2), 0)
         neck_box = BBox(width=width, height=height, center=tcenter(center))
 
         neck_all_cordinates = []
         neck_all_positions = []
         neck_all_measures = []
-        for i in np.arange(0,25, 0.5):
-            neck_rotation_matrix = euler_angles_to_matrix(tc.tensor([float(-i)*(tc.pi/180),0,0]).to(device), "XYZ")
+        for i in np.arange(0,23, 0.5):
+            neck_rotation_matrix = euler_angles_to_matrix(tc.tensor([float(-24)*(tc.pi/180),0,0]).to(device), "XYZ")
             neck_triangle = lambda   x: tc.FloatTensor([
                 [20, x, 11.6],
                 [-20, x, 11.6],
                 [0, x, -23.2]
             ]).to(device) @ neck_rotation_matrix
-            neck_curves = CurveUtils.calculate_curve(selected_body, neck_box, neck_triangle, 1, template, device, closed=False)
+            neck_curves = CurveUtils.calculate_curve(selected_body, neck_box, neck_triangle, 0, template, device)
             neck_all_cordinates.extend(neck_curves[0])
             neck_all_positions.extend(neck_curves[1])
             neck_all_measures.extend(neck_curves[2])
-        neck_all_curves = [neck_all_cordinates, neck_all_positions, neck_all_measures]
+            neck_all_curves = [neck_all_cordinates, neck_all_positions, neck_all_measures]
 
         # return list(zip(*[neck_all_curves]))
         
@@ -309,77 +299,3 @@ class CurveUtils():
         ]
 
         return list(zip(*all_segments))# transpose trick
-
-    def calculate_derived(selected_body_t, selected_body_x, template, all_positions, device):
-        aditional_measures = []
-        aditional_positions = []
-        
-        body_min = selected_body_t[:,1].min()
-        body_max = selected_body_t[:,1].max()
-        height = body_max - body_min
-        aditional_measures.append(height*100)
-
-        # calculate crotch length 
-        mean_waist_point = all_positions[2].mean(axis=0)
-        mean_hip_point = all_positions[3].mean(axis=0)
-
-        triangles = tc.FloatTensor([[
-            [mean_hip_point[0], mean_waist_point[1], 10],
-            [mean_hip_point[0], mean_waist_point[1],-10],
-            [mean_hip_point[0],                 -10,  0]
-        ]]).to('cuda')
-        
-        positions, coordinates = CurveUtils.plane_triangle_colision(triangles, selected_body_x[template], device, template)
-        positions = CurveUtils.generate_positions(coordinates=coordinates, vertices=selected_body_t)
-        positions, coordinates = CurveUtils.sort_curve(positions, coordinates)
-        distance = CurveUtils.calculate_distances(positions, closed=False)
-
-        aditional_measures.append(distance)
-        aditional_positions.append(positions)
-
-        
-        return aditional_measures, aditional_positions
-
-    def select_better(result, selected_body_t, selected_body_x, template, selected_measure, device):
-        curve_index = {
-            'neck_girth':4, # 5.3.2
-            'bust_chest_girth': 0, # 5.3.4
-            'waist_girth': 1, # 5.3.10
-            'hip_girth': 1, # 5.3.13
-            'upper_arm_girth': 3, # 5.3.16
-            'thigh_girth': 2, # 5.3.20
-        }
-        curve_names = list(curve_index.keys())
-
-        curves = result[0]
-        measures = result[1]
-        positions = result[2]
-
-        all_positions = []
-        all_measures = []
-        best_curves = []
-
-        
-        for measure in curve_index.keys():
-            measures_index = tc.FloatTensor(measures[curve_index[measure]]).to(device)
-            diff = abs(measures_index - selected_measure[measure]/10)
-            best = diff.argmin()
-            all_positions.append(positions[curve_index[measure]][best])
-            all_measures.append(measures_index[best])
-            best_curves.append(curves[curve_index[measure]][best])
-
-        derived_measures, derived_positions = CurveUtils.calculate_derived(selected_body_t, selected_body_x, template, all_positions, device)
-        all_measures.extend(derived_measures)
-        all_positions.extend(derived_positions)
-
-        selected_measure_tensor = tc.FloatTensor(selected_measure[curve_names+['stature', 'crotch_length']]).to(device).cpu().numpy()
-        all_measures = tc.FloatTensor(all_measures).to(device).cpu().numpy()
-
-
-        data = {
-            'original': selected_measure_tensor/10,
-            'measured': all_measures,
-            'error(mm)': abs(selected_measure_tensor/10 - all_measures)*10
-        }
-        data = pd.DataFrame(data)
-        return best_curves, data
