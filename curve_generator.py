@@ -1,384 +1,246 @@
-import numpy as np
 import torch as tc
-from curve_utils import CurveUtils
-import pandas as pd
-from tqdm import tqdm as pgb
-
 from pytorch3d.transforms import euler_angles_to_matrix
 
-class BBox():
-    def __init__(self, center=None, length=1000, width=1000, height=1000, orientation=None, angles=None):
-        if center is None:
-            self.center = tc.FloatTensor([0.0,0.0,0.0]).to('cuda')
-        else:
-            self.center = center
+from bbox import BBox
+from curve_utils import CurveUtils
 
-        if orientation is None:
-            self.orientation = tc.FloatTensor([
-                [1.0,0.0,0.0],
-                [0.0,1.0,0.0],
-                [0.0,0.0,1.0],
-            ]).to('cuda')
-        else:
-            self.orientation = orientation
-
-        self.length = length
-        self.width = width
-        self.height = height
-
-    def rotate(self, angles=(0,0,0)):
-        rotation_matrix = euler_angles_to_matrix(tc.tensor(angles).to('cuda')/180*tc.pi, "XYZ")
-        self.orientation = self.orientation @ rotation_matrix
-
-    def check_inside(self, points):
-        dir  = points - self.center
-        tests = [
-            tc.sum(dir * self.orientation[0], axis=1) <= (self.width/2),
-            tc.sum(dir * self.orientation[0], axis=1) >= (-self.width/2),
-
-            tc.sum(dir * self.orientation[1], axis=1) <= (self.height/2),
-            tc.sum(dir * self.orientation[1], axis=1) >= (-self.height/2),
-
-            tc.sum(dir * self.orientation[2], axis=1) <= (self.length/2),
-            tc.sum(dir * self.orientation[2], axis=1) >= (-self.length/2),
-        ]
-        return tc.all(tc.column_stack(tests), dim=1)
-
-    def __str__(self) -> str:
-        return f"{self.center} {self.height} {self.width}"
-        
 
 class CurveGenerator():
 
-    def __init__(self, mesh_path=None, template_path=None, vertices=None, faces=None, body_measures=None) -> None:
+    @classmethod
+    def calculate_curve(
+        cls, body, bounding_box, axis, template,
+        device, closed=True, rotation=tc.FloatTensor([])):
 
-        if body_measures is None:
-            raise Exception("Measures cannot be None")
+        if axis==1:
+            bmin = bounding_box.center[1]-(bounding_box.height/2)
+            bmax = bounding_box.center[1]+(bounding_box.height/2)
+        if axis==0:
+            bmin = bounding_box.center[0]-(bounding_box.width/2)
+            bmax = bounding_box.center[0]+(bounding_box.width/2)
+
+        height_values = tc.arange(bmin, bmax, 0.001)
+        all_positions = []
+        all_coordinates = []
+        all_measures = []
+
+        for value in height_values:
+
+            triangles = CurveGenerator.define_triangle(axis, value, rotation, device)
+            positions, coordinates = CurveGenerator.plane_triangle_colision(
+                triangles, body[template], device, template
+            )
+            inside_filter = bounding_box.check_inside(positions)
+            positions, coordinates = positions[inside_filter], coordinates[inside_filter]
+            positions, coordinates = CurveUtils.sort_curve(positions, coordinates)
+            measures = CurveUtils.calculate_distances(positions, closed)
+            all_positions.append(positions)
+            all_coordinates.append(coordinates)
+            all_measures.append(measures)
+        return all_coordinates, all_measures, all_positions
+
+    @classmethod
+    def define_triangle(cls, axis, displ, rotation, device):
+        if axis == 0:
+            triangle = [[ displ,  20,  11.6],
+                        [ displ, -20,  11.6],
+                        [ displ,   0, -23.2]]
+        elif axis == 1:
+            triangle = [[ 20, displ,  11.6],
+                        [-20, displ,  11.6],
+                        [  0, displ, -23.2]]
+        if rotation.numel() == 0:
+            triangle = tc.FloatTensor(triangle).to(device)
         else:
-            self.body_measures = body_measures
+            triangle = tc.FloatTensor(triangle).to(device) @ rotation
+        return triangle.unsqueeze(0)
 
-        if mesh_path:
-            self.vertices = CurveUtils.load_mesh(mesh_path)
-        if len(vertices)>0:
-            self.vertices = vertices
-        self.vertices = tc.cuda.FloatTensor(self.vertices)
+    @classmethod
+    def get_curves(cls, selected_body, selected_measure, template, device):
 
-        if template_path:
-            self.faces, _ = CurveUtils.load_template(template_path)
-        if len(faces)>0:
-            self.faces = faces
-        self.faces = tc.cuda.LongTensor(self.faces)
+        body_measures = selected_measure/1000
+        body_portion = body_measures['stature']/8
+        body_min = selected_body[:,1].min()
+        body_width = selected_body[:,0].max() - selected_body[:,0].min()
 
-        self.curves = {}
-        self.measures = {}
-        self.positions = {}
+        # neck planes box
+        height = body_portion
+        width = body_portion
+        center = (0, body_min + (body_portion*6.25) + (height/2), 0)
+        neck_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
 
-    def generate_positions(vertices, coordinates):
-        x = vertices[coordinates[:,0].to(tc.long)].T * coordinates[:,3]
-        y = vertices[coordinates[:,1].to(tc.long)].T * coordinates[:,4]
-        z = vertices[coordinates[:,2].to(tc.long)].T * coordinates[:,5]
-        p = x+y+z
-        return p.T
+        neck_all_cordinates = []
+        neck_all_positions = []
+        neck_all_measures = []
+        for i in tc.arange(0,25, 0.5):
+            neck_rotation_matrix = euler_angles_to_matrix(
+                tc.tensor([float(-i)*(tc.pi/180),0,0]).to(device),
+                "XYZ"
+            )
+            neck_curves = CurveGenerator.calculate_curve(
+                selected_body, neck_box, 1, template,
+                device, closed=False, rotation=neck_rotation_matrix)
+            neck_all_cordinates.extend(neck_curves[0])
+            neck_all_positions.extend(neck_curves[1])
+            neck_all_measures.extend(neck_curves[2])
+        neck_all_curves = [neck_all_cordinates, neck_all_positions, neck_all_measures]
 
-    def calculate_distances(positions):
-        if positions.numel() == 0:
-            return 0
-        distances = tc.cdist(positions, positions)
-        distance = distances.diagonal(1).sum()
-        return distance*100
+        # bust planes box
+        height = body_portion
+        center = (0, body_min + (body_portion*5.1) + (height/2), 0)
+        width = body_measures['bust_chest_girth']/tc.pi*1.3
+        bust_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
 
-    def baricentric(self, a, b, c, p):
-        
-        vab = b - a
-        vbc = c - b
-        vca = a - c
-        
-        vap = p - a
-        vbp = p - b
-        vcp = p - c
+        # torso planes box
+        width = body_measures['hip_girth']/tc.pi*1.3
+        height = body_portion*1.5
+        center = (0, body_min + (body_portion*3.75) + (height/2), 0)
+        torso_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
 
+        # leg planes box
+        width = body_width/2
+        height = body_portion*3
+        to_right = body_width/4
+        center = (-to_right, body_min + body_portion + (height/2) ,0)
+        leg_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
 
-        cross_norm = tc.linalg.norm(tc.cross(vab,vbc), axis=1)
-        n = tc.cross(vab,vbc) / tc.column_stack([cross_norm, cross_norm, cross_norm])
-        
-        ABC = (n * tc.cross(vab, vbc)).sum(axis=1) / 2
-        ABP = (n * tc.cross(vab, vbp)).sum(axis=1) / 2
-        BCP = (n * tc.cross(vbc, vcp)).sum(axis=1) / 2
-        CAP = (n * tc.cross(vca, vap)).sum(axis=1) / 2
+        # arm planes box
+        width = body_portion*2
+        height = body_width
+        chest_girth = body_measures['bust_chest_girth']/tc.pi/2*1.1
+        center = (-chest_girth-(width/2), body_portion*5.5,0)
+        arm_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
 
-        w = ABP/ABC
-        u = BCP/ABC
-        v = CAP/ABC
+        all_segments = [
+            CurveGenerator.calculate_curve(selected_body, bust_box, 1, template, device),
+            CurveGenerator.calculate_curve(selected_body, torso_box, 1, template, device),
+            CurveGenerator.calculate_curve(selected_body, leg_box, 1, template, device),
+            CurveGenerator.calculate_curve(selected_body, arm_box, 0, template, device),
+            neck_all_curves,
+        ]
 
-        return tc.column_stack([u,v,w])
+        return list(zip(*all_segments))# transpose trick
 
-    def intersection(self, p0, p1, p2, f1,f2,f3):
-
-        vd = p0 - p1
-        integer_part = tc.inner(p0, self.nplane)
-        incognita_part = tc.inner(self.nplane, vd)
-        t = -(self.dplane + integer_part)/incognita_part
-        p = p0 + (tc.column_stack([t,t,t])*vd)
-        return tc.column_stack([tc.column_stack([f1,f2,f3]), self.baricentric(p0,p1,p2,p)])
-
-
-    def calculate_colision(self):
-
-
-        v = self.vertices[self.faces]
-        v = v.reshape(-1, 3)
-        colision = (v@self.nplane) + self.dplane
-        colision = colision.reshape(-1, 3)
-        v = v.reshape(-1,3,3)
-
-        t1 = tc.all(colision < 0, axis=1)
-        t2 = tc.all(colision > 0, axis=1)
-        t3 = ~(tc.any(tc.column_stack((t1,t2)), axis=1))
-
-        f = self.faces[t3]
-        colision = colision[t3]
-        v = v[t3]
-        
-        t1 = colision[:,1] * colision[:,2] > 0
-        t2 = colision[:,0] * colision[:,2] > 0
-        t3 = colision[:,0] * colision[:,1] > 0
-
-        p = tc.row_stack([
-            self.intersection(v[t1][:,0], v[t1][:,1], v[t1][:,2], f[t1][:,0], f[t1][:,1], f[t1][:,2]),
-            self.intersection(v[t1][:,0], v[t1][:,2], v[t1][:,1], f[t1][:,0], f[t1][:,2], f[t1][:,1]),
-
-            self.intersection(v[t2][:,1], v[t2][:,2], v[t2][:,0], f[t2][:,1], f[t2][:,2], f[t2][:,0]),
-            self.intersection(v[t2][:,1], v[t2][:,0], v[t2][:,2], f[t2][:,1], f[t2][:,0], f[t2][:,2]),
-
-            self.intersection(v[t3][:,2], v[t3][:,0], v[t3][:,1], f[t3][:,2], f[t3][:,0], f[t3][:,1]),
-            self.intersection(v[t3][:,2], v[t3][:,1], v[t3][:,0], f[t3][:,2], f[t3][:,1], f[t3][:,0])
+    @classmethod
+    def plane_triangle_colision(cls, planes, triangles, device, faces=tc.LongTensor()):
+        centroid = tc.row_stack([
+            triangles[:,0], triangles[:,1], triangles[:,2],
+            triangles[:,0], triangles[:,1], triangles[:,2]
+        ])
+        vectors = tc.row_stack([
+            triangles[:,1] - triangles[:,0], triangles[:,0] - triangles[:,1],
+            triangles[:,0] - triangles[:,2], triangles[:,2] - triangles[:,0],
+            triangles[:,2] - triangles[:,1], triangles[:,1] - triangles[:,2],
         ])
 
-        return p
+        # plane def = plane_normal, plane_offset, point 0, point 1, point 2
+        plane_def = CurveGenerator.define_planes(planes)
 
-    def remove_mirror(self, positions, coordinates):
-        absolute_positions = abs(positions)[:,0]
-        min_point = absolute_positions.min(axis=0)[0]
-        if min_point > 0.003:
-            invalid_positions = positions[:,0] < 0
-            coordinates = coordinates[invalid_positions]
-        return coordinates
+        colision_points, _, _ = CurveGenerator.calculate_colision_1(
+            centroid, vectors, plane_def[0], plane_def[1]
+        )
+        baricentric, triangles_filter = CurveGenerator.baricentric_coordinates(
+            triangles[:,0].repeat(6,1),
+            triangles[:,1].repeat(6,1),
+            triangles[:,2].repeat(6,1),
+            colision_points+centroid
+        )
+        _, planes_filter = CurveGenerator.baricentric_coordinates(
+            plane_def[2], plane_def[3], plane_def[4], colision_points+centroid
+        )
+        all_filters = triangles_filter&planes_filter
+        coordinates = tc.cat([faces.repeat(6,1).unsqueeze(0), baricentric], dim=-1)
+        positions, coordinates = (colision_points+centroid)[all_filters], coordinates[all_filters]
 
+        positions = positions.round(decimals=6)
+        positions, index, counts = positions.unique(dim=0, return_inverse=True, return_counts=True)
 
-    def sort_curve(self, positions, measure):
-        centroid = positions.mean(axis=0)
-        vectors = positions - centroid
-        sort_around = vectors.var(axis=0).argmin()
-        if sort_around == 0:
-            angles = tc.arctan2(vectors[:,1], vectors[:,2])
-        if sort_around == 1:
-            angles = tc.arctan2(vectors[:,0], vectors[:,2])
-        if sort_around == 2:
-            angles = tc.arctan2(vectors[:,0], vectors[:,1])
-        return measure[tc.argsort(angles)]
+        # get index of first recurrence of values in a array
+        _, ind_sort = index.sort(stable=True)
+        cum_sum = counts.cumsum(0)
+        cum_sum = tc.cat((tc.LongTensor([0]).to(device), cum_sum[:-1]))
+        index = ind_sort[cum_sum]
+        coordinates = coordinates[index]
+        return positions, coordinates
 
-    def calculate_curves(self, axis_number, plane_normal, axis_name, bbox, exbox):
-        min_y = self.vertices[:,axis_number].min()
-        max_y = self.vertices[:,axis_number].max()
-        coordinates_array = []
-        for i in tc.arange(min_y, max_y, 1e-3):
-            self.nplane, self.dplane = tc.cuda.FloatTensor(plane_normal), -i
-            coordinates = self.calculate_colision()
-            if coordinates.size(0):
-                positions = CurveGenerator.generate_positions(self.vertices, coordinates)
-                if coordinates.size(0) > 0:
-                    filter = bbox.check_inside(positions)
-                    for box in exbox:
-                        f = ~box.check_inside(positions)
-                        filter = tc.all(tc.column_stack([f, filter]), dim=1)
-                    positions = positions[filter]
-                    coordinates = coordinates[filter]
-                    if coordinates.size(0) > 0:
-                        coordinates = self.sort_curve(positions, coordinates)
-                        coordinates_array.append(coordinates)
-        self.curves[axis_name] = coordinates_array
-        return coordinates_array
+    @classmethod
+    def ray_polygon_colision(cls, polygons, positions):
+        centroid, nvectors = CurveGenerator.define_vectors(positions)
+        #  plane def = plane_normal, plane_offset, point 0, point 1, point 2
+        plane_def = CurveGenerator.define_planes(polygons)
+        colision_points, points_filter, ray_offset = CurveGenerator.calculate_colision(
+            centroid, nvectors, plane_def[0], plane_def[1]
+        )
+        _, bfilter = CurveGenerator.baricentric_coordinates(
+            plane_def[2], plane_def[3], plane_def[4], colision_points+centroid
+        )
+        result = CurveUtils.get_closest_point(
+            colision_points+centroid, ray_offset, points_filter, bfilter
+        )
+        return result, CurveUtils.calculate_distances(result)
 
-    def partial_computate(self, axes, bounding_boxes, index, bbignore):
-        curves = self.calculate_curves(*axes[index], bounding_boxes[index], bbignore)
-        all_positions = []
-        for curve in curves:
-                position = CurveGenerator.generate_positions(self.vertices, curve)
-                all_positions.extend(position)
-        CurveUtils.save_obj('teste.obj', all_positions)
+    @classmethod
+    def baricentric_coordinates(cls, point_a, point_b, point_c, goal_point):
+        vab = (point_b - point_a).unsqueeze(0)
+        vac = (point_c - point_a).unsqueeze(0)
+        vap = goal_point - point_a
 
-    def computate(self, axes, bounding_boxes):
-        curves_bust = self.calculate_curves(*axes[0], bounding_boxes[0],[bounding_boxes[3]])
-        curves_torso = self.calculate_curves(*axes[1], bounding_boxes[1],[])
-        curves_leg = self.calculate_curves(*axes[2], bounding_boxes[2],[])
-        curves_arm = self.calculate_curves(*axes[3], bounding_boxes[3], bounding_boxes[:3])
-        curves_neck = self.calculate_curves(*axes[4], bounding_boxes[4], [])
+        dbb = (vab * vab).sum(axis=2)
+        dbc = (vab * vac).sum(axis=2)
+        dcc = (vac * vac).sum(axis=2)
+        dpb = (vap * vab).sum(axis=2)
+        dpc = (vap * vac).sum(axis=2)
 
-        curves_blocks = []
-        curves_blocks.append(curves_bust)
-        curves_blocks.append(curves_torso)
-        curves_blocks.append(curves_leg)
-        curves_blocks.append(curves_arm)
-        curves_blocks.append(curves_neck)
+        denom = dbb * dcc - dbc * dbc
+        area_v = (dcc * dpb - dbc * dpc) /denom
+        area_w = (dbb * dpc - dbc * dpb) /denom
+        area_u = 1.0 - area_v - area_w
 
-        all_positions = []
-        all_measures = []
-        for curves in curves_blocks:
-            curves_positions = []
-            curves_measures = []
-            for curve in curves:
-                position = CurveGenerator.generate_positions(self.vertices, curve)[::2]
-                measures = CurveGenerator.calculate_distances(position)
-                curves_positions.append(position)
-                curves_measures.append(measures)
-            all_positions.append(curves_positions)
-            all_measures.append(curves_measures)
+        test = (area_u>=0) & (area_v>=0) & (area_w>=0)
+        return tc.stack([area_u,area_v,area_w], axis=2), test
 
-        return curves_blocks, all_measures, all_positions
+    @classmethod
+    def define_vectors(cls, positions):
 
+        ones = tc.ones(positions.shape[0]).to("cuda")
+        positions_range = positions.max(axis=0).values - positions.min(axis=0).values
+        lower_dimension = positions_range.argmin()
+        points_matrix = positions.clone()
+        points_matrix[:,lower_dimension] = ones
+        points_optimization = tc.linalg.solve(
+            points_matrix.T@points_matrix,
+            points_matrix.T@positions[:,lower_dimension]
+        )
+        new_y = points_matrix @ points_optimization
+        points_matrix[:,lower_dimension] = new_y
 
-def get_all_curves(selected_body, selected_measure, template, device):
+        centroid = points_matrix.mean(axis=0)
+        vectors = points_matrix - centroid
+        vectors = vectors/tc.linalg.norm(vectors, axis=1).unsqueeze(1)
+        return centroid, vectors
 
-    tcenter = lambda a: tc.FloatTensor(a).to(device)
+    @classmethod
+    def define_planes(cls, polygons):
+        polygon_0 = polygons[:,0]
+        polygon_1 = polygons[:,1]
+        polygon_2 = polygons[:,2]
+        cross = tc.cross(polygon_0 - polygon_1, polygon_0 - polygon_2, dim=1)
+        plane_normal = cross / tc.linalg.norm(cross, axis=1).unsqueeze(1)
+        plane_offset = -tc.sum(polygon_0*plane_normal, axis=1)
+        return plane_normal, plane_offset, polygon_0, polygon_1, polygon_2
 
-    body_measures = selected_measure/1000
-    body_portion = body_measures['stature']/8
+    @classmethod
+    def calculate_colision_1(cls, origin, vectors, normals, distances):
+        prod_norm_vec = normals@vectors.T
+        prod_norm_orig = normals@origin.T
+        ray_offset = -((prod_norm_orig+distances.unsqueeze(1))/prod_norm_vec)
+        colision_point = vectors.unsqueeze(0) * ray_offset.unsqueeze(2)
+        return colision_point, (ray_offset >= 0), ray_offset
 
-    body_min = selected_body[:,1].min()
-    body_width = selected_body[:,0].max() - selected_body[:,0].min()
-    
-    # bust planes box
-    height = body_portion
-    center = (0, body_min + (body_portion*5.1) + (height/2), 0)
-    width = body_measures['bust_chest_girth']/tc.pi*1.3
-    bust_box = BBox(width=width, height=height, center=tcenter(center))
-    
-    # torso planes box
-    width = body_measures['hip_girth']/tc.pi*1.3
-    height = body_portion*1.5
-    center = (0, body_min + (body_portion*3.75) + (height/2), 0)
-    torso_box = BBox(width=width, height=height, center=tcenter(center))
-    
-    # leg planes box
-    width = body_width/2 #body_measures['thigh_girth']/tc.pi*1.2
-    height = body_portion*3
-    to_right = body_width/4# body_measures['hip_girth']/tc.pi/3
-    center = (-to_right, body_min + body_portion + (height/2) ,0)
-    leg_box = BBox(width=width, height=height, center=tcenter(center))
-    
-    # arm planes box
-    width = body_portion*4
-    height = body_width
-    c = body_measures['bust_chest_girth']/tc.pi/2*1.1
-    center = (-c-(width/2), body_portion*5.5,0)
-    arm_box = BBox(width=width, height=height, center=tcenter(center))
-    
-    axes = [
-        (1,[0.0,1.0,0.0], 'b'),
-        (1,[0.0,1.0,0.0], 't'),
-        (1,[0.0,1.0,0.0], 'l'),
-        (0,[1.0,0.0,0.0], 'a'),
-        # (1,neck_plane_normal, 'n'),
-        (0,[1.0,0.0,0.0], 'c'),
-    ]
-
-    bounding_boxes = [
-        bust_box,
-        torso_box,
-        leg_box,
-        arm_box,
-        # neck_box,
-    ]
-    
-    generator = CurveGenerator(vertices=selected_body, faces=template, body_measures=selected_measure)
-    result = generator.computate(axes, bounding_boxes)
-
-    # neck planes box
-    height = body_portion
-    width = body_portion
-    center = (0, body_min + (body_portion*6.5) + (height/2), 0)
-    neck_box = BBox(width=width, height=height, center=tcenter(center))
-
-    neck_plane_normals = []
-    for i in np.arange(0,30, 0.5):
-        neck_rotation_matrix = euler_angles_to_matrix(tc.tensor([i*(tc.pi/180),0,0]).to('cuda'), "XYZ")
-        neck_plane_normal = tc.FloatTensor([0.0,1.0,0.0]).to(device) @ neck_rotation_matrix
-        neck_plane_normals.append(neck_plane_normal)
-
-    result = generator.computate(neck_plane_normals, [neck_box])
-
-    return result
-
-def calculate_derived(selected_body_t, selected_body_x, template, all_positions, device):
-    aditional_measures = []
-    aditional_positions = []
-    
-    body_min = selected_body_t[:,1].min()
-    body_max = selected_body_t[:,1].max()
-    height = body_max - body_min
-    aditional_measures.append(height*100)
-
-    # calculate crotch length 
-    mean_waist_point = all_positions[2].mean(axis=0)
-    mean_hip_point = all_positions[3].mean(axis=0)
-
-    triangles = tc.FloatTensor([[
-        [mean_hip_point[0], mean_waist_point[1], 10],
-        [mean_hip_point[0], mean_waist_point[1],-10],
-        [mean_hip_point[0],                 -10,  0]
-    ]]).to('cuda')
-    
-    positions, coordinates = CurveUtils.plane_triangle_colision(triangles, selected_body_x[template], device, template)
-    positions = CurveUtils.generate_positions(coordinates=coordinates, vertices=selected_body_t)
-    positions, coordinates = CurveUtils.sort_curve(positions, coordinates)
-    distance = CurveUtils.calculate_distances(positions, closed=False)
-
-    aditional_measures.append(distance)
-    aditional_positions.append(positions)
-
-    
-    return aditional_measures, aditional_positions
-
-def select_better(result, selected_body_t, selected_body_x, template, selected_measure, device):
-    curve_index = {
-        'neck_girth':4, # 5.3.2
-        'bust_chest_girth': 0, # 5.3.4
-        'waist_girth': 1, # 5.3.10
-        'hip_girth': 1, # 5.3.13
-        'upper_arm_girth': 3, # 5.3.16
-        'thigh_girth': 2, # 5.3.20
-    }
-    curve_names = list(curve_index.keys())
-
-    curves = result[0]
-    measures = result[1]
-    positions = result[2]
-
-    all_positions = []
-    all_measures = []
-    best_curves = []
-
-    
-    for measure in curve_index.keys():
-        measures_index = tc.FloatTensor(measures[curve_index[measure]]).to(device)
-        diff = abs(measures_index - selected_measure[measure]/10)
-        best = diff.argmin()
-        all_positions.append(positions[curve_index[measure]][best])
-        all_measures.append(measures_index[best])
-        best_curves.append(curves[curve_index[measure]][best])
-
-    derived_measures, derived_positions = calculate_derived(selected_body_t, selected_body_x, template, all_positions, device)
-    all_measures.extend(derived_measures)
-    all_positions.extend(derived_positions)
-
-    selected_measure_tensor = tc.FloatTensor(selected_measure[curve_names+['stature', 'crotch_length']]).to(device).cpu().numpy()
-    all_measures = tc.FloatTensor(all_measures).to(device).cpu().numpy()
-
-
-    data = {
-        'original': selected_measure_tensor/10,
-        'measured': all_measures,
-        'error(mm)': abs(selected_measure_tensor/10 - all_measures)*10
-    }
-    data = pd.DataFrame(data)
-    return best_curves, data
+    @classmethod
+    def calculate_colision(cls, origin, vectors, normals, distances):
+        prod_norm_vec = vectors@normals.T
+        prod_norm_orig = origin@normals.T
+        ray_offset = -((prod_norm_orig+distances.unsqueeze(0))/prod_norm_vec)
+        colision_point = ray_offset.unsqueeze(2) @ vectors.unsqueeze(1)
+        return colision_point, (ray_offset >= 0), ray_offset
