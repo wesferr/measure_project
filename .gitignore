@@ -9,3 +9,8 @@ star/__pycache__
 star/*.npz
 tests
 /BKP
+src/__pycache__
+src/star/__pycache__
+src/star/*.npz
+src/tests
+src//BKP
