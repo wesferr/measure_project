@@ -13,4 +13,5 @@ src/__pycache__
 src/star/__pycache__
 src/star/*.npz
 src/tests
-src//BKP
+src/BKP
+.ipynb_checkpoints
