@@ -6,7 +6,7 @@ class CurveUtils():
     @classmethod
     def calculate_distances(cls, positions, closed=True):
         if positions.numel() <= 3:
-            return 0
+            return tc.FloatTensor(0)
         distances = tc.cdist(positions, positions)
         if closed is True:
             distance = distances.diagonal(1).sum()

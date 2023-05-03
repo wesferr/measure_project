@@ -15,3 +15,4 @@ src/star/*.npz
 src/tests
 src/BKP
 .ipynb_checkpoints/*
+output/*
