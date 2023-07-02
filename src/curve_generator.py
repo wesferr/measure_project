@@ -20,15 +20,16 @@ class CurveGenerator():
         if axis==0:
             bmin = bounding_box.center[0]-(bounding_box.width/2)
             bmax = bounding_box.center[0]+(bounding_box.width/2)
-
-        height_values = tc.arange(bmin, bmax, 0.001)
+        height_values = tc.arange(float(bmin), float(bmax), 0.1)
         all_positions = []
         all_coordinates = []
         all_measures = []
-
+        
         for value in height_values:
 
             triangles = CurveGenerator.define_triangle(axis, value, rotation, device)
+
+            
             positions, coordinates = CurveGenerator.plane_triangle_colision(
                 triangles, body[template], device, template
             )
@@ -38,9 +39,11 @@ class CurveGenerator():
             positions, coordinates = CurveUtils.sort_curve(positions, coordinates)
             measures = CurveUtils.calculate_distances(positions, closed)
             if positions.nelement() > 0:
-                all_positions.append(positions)
-                all_coordinates.append(coordinates)
-                all_measures.append(measures)
+                all_positions.append(positions.detach().cpu().numpy())
+                all_coordinates.append(coordinates.detach().cpu().numpy())
+                all_measures.append(measures.detach().cpu().numpy())
+        
+        
         return all_coordinates, all_measures, all_positions
 
     @classmethod
@@ -60,7 +63,7 @@ class CurveGenerator():
         return triangle.unsqueeze(0)
 
     @classmethod
-    def get_curves(cls, selected_body, selected_measure, template, device):
+    def get_curves(cls, selected_body, selected_measure, template, device, gender):
 
         body_measures = selected_measure/1000
         body_min = selected_body[:,1].min()
@@ -73,6 +76,7 @@ class CurveGenerator():
         width = body_portion
         center = (0, body_min + (body_portion*6.5) + (height/2), 0)
         neck_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
+        neck_box.save_limits(f"output/{gender}_neck_bx.obj")
 
         neck_all_cordinates = []
         neck_all_positions = []
@@ -84,6 +88,7 @@ class CurveGenerator():
                 tc.tensor([float(-i)*(tc.pi/180),0,0]).to(device),
                 "XYZ"
             )
+            
             neck_curves = CurveGenerator.calculate_curve(
                 selected_body, neck_box, 1, template,
                 device, closed=False, rotation=neck_rotation_matrix, check_inside=False)
@@ -101,6 +106,8 @@ class CurveGenerator():
         bust_curves = CurveGenerator.calculate_curve(selected_body, bust_box, 1, template, device, check_inside=False)
         pgb.update(1)
 
+        bust_box.save_limits(f"output/{gender}_bust_bx.obj")
+
         # torso planes box
         width = body_measures['hip_girth']/tc.pi*1.3
         height = body_portion*1.75
@@ -108,6 +115,8 @@ class CurveGenerator():
         torso_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
         torso_curves = CurveGenerator.calculate_curve(selected_body, torso_box, 1, template, device, check_inside=False)
         pgb.update(1)
+        torso_box.save_limits(f"output/{gender}_torso_bx.obj")
+        
 
         # leg planes box
         width = body_width/4
@@ -117,6 +126,8 @@ class CurveGenerator():
         leg_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
         leg_curves = CurveGenerator.calculate_curve(selected_body, leg_box, 1, template, device)
         pgb.update(1)
+        leg_box.save_limits(f"output/{gender}_leg_bx.obj")
+        
 
         # arm planes box
         width = body_portion*2
@@ -126,6 +137,7 @@ class CurveGenerator():
         arm_box = BBox(width=width, height=height, center=tc.FloatTensor(center).to(device))
         arm_curves = CurveGenerator.calculate_curve(selected_body, arm_box, 0, template, device)
         pgb.update(1)
+        arm_box.save_limits(f"output/{gender}_arm_bx.obj")
 
         all_segments = [
             bust_curves,
@@ -155,6 +167,7 @@ class CurveGenerator():
         colision_points, _, _ = CurveGenerator.calculate_colision_1(
             centroid, vectors, plane_def[0], plane_def[1]
         )
+        
         baricentric, triangles_filter = CurveGenerator.baricentric_coordinates(
             triangles[:,0].repeat(6,1),
             triangles[:,1].repeat(6,1),
@@ -164,19 +177,23 @@ class CurveGenerator():
         _, planes_filter = CurveGenerator.baricentric_coordinates(
             plane_def[2], plane_def[3], plane_def[4], colision_points+centroid
         )
+        
+        
         all_filters = triangles_filter&planes_filter
         coordinates = tc.cat([faces.repeat(6,1).unsqueeze(0), baricentric], dim=-1)
         positions, coordinates = (colision_points+centroid)[all_filters], coordinates[all_filters]
+        
 
         positions = positions.round(decimals=6)
         positions, index, counts = positions.unique(dim=0, return_inverse=True, return_counts=True)
 
-        # get index of first recurrence of values in a array
-        _, ind_sort = index.sort(stable=True)
-        cum_sum = counts.cumsum(0)
-        cum_sum = tc.cat((tc.LongTensor([0]).to(device), cum_sum[:-1]))
-        index = ind_sort[cum_sum]
-        coordinates = coordinates[index]
+        # # get index of first recurrence of values in a array
+        # _, ind_sort = index.sort(stable=True)
+        # cum_sum = counts.cumsum(0)
+        # cum_sum = tc.cat((tc.LongTensor([0]).to(device), cum_sum[:-1]))
+        # index = ind_sort[cum_sum]
+        # coordinates = coordinates[index]
+        
         return positions, coordinates
 
     @classmethod
