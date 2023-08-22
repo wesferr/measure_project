@@ -1,4 +1,5 @@
 import torch as tc
+import numpy as np
 from tqdm import tqdm
 from pytorch3d.transforms import euler_angles_to_matrix
 
@@ -20,7 +21,8 @@ class CurveGenerator():
         if axis==0:
             bmin = bounding_box.center[0]-(bounding_box.width/2)
             bmax = bounding_box.center[0]+(bounding_box.width/2)
-        height_values = tc.arange(float(bmin), float(bmax), 0.1)
+            
+        height_values = tc.arange(float(bmin), float(bmax), 0.01)
         all_positions = []
         all_coordinates = []
         all_measures = []
@@ -82,7 +84,7 @@ class CurveGenerator():
         neck_all_positions = []
         neck_all_measures = []
 
-        pgb = tqdm(range(0,44), desc='processing body')
+        pgb = tqdm(range(0,45), desc='processing body')
         for i in tc.arange(5,25, 0.5):
             neck_rotation_matrix = euler_angles_to_matrix(
                 tc.tensor([float(-i)*(tc.pi/180),0,0]).to(device),
@@ -139,6 +141,7 @@ class CurveGenerator():
         pgb.update(1)
         arm_box.save_limits(f"output/{gender}_arm_bx.obj")
 
+
         all_segments = [
             bust_curves,
             torso_curves,
@@ -187,12 +190,12 @@ class CurveGenerator():
         positions = positions.round(decimals=6)
         positions, index, counts = positions.unique(dim=0, return_inverse=True, return_counts=True)
 
-        # # get index of first recurrence of values in a array
-        # _, ind_sort = index.sort(stable=True)
-        # cum_sum = counts.cumsum(0)
-        # cum_sum = tc.cat((tc.LongTensor([0]).to(device), cum_sum[:-1]))
-        # index = ind_sort[cum_sum]
-        # coordinates = coordinates[index]
+        # get index of first recurrence of values in a array
+        _, ind_sort = index.sort(stable=True)
+        cum_sum = counts.cumsum(0)
+        cum_sum = tc.cat((tc.LongTensor([0]).to(device), cum_sum[:-1]))
+        index = ind_sort[cum_sum]
+        coordinates = coordinates[index]
         
         return positions, coordinates
 
