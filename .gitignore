@@ -4,10 +4,8 @@
 /data/*.pkl
 /data/MOVE4D/female/*
 /data/MOVE4D/male/*
-/data/NOMO400/female/*
-/data/NOMO400/male/*
-/data/NOMO400/femalem/*
-/data/NOMO400/malem/*
+/data/SS20/female/*
+/data/SS20/male/*
 __pycache__
 star/__pycache__
 star/*.npz
