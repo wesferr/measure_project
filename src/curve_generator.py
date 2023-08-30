@@ -22,7 +22,7 @@ class CurveGenerator():
             bmin = bounding_box.center[0]-(bounding_box.width/2)
             bmax = bounding_box.center[0]+(bounding_box.width/2)
             
-        height_values = tc.arange(float(bmin), float(bmax), 0.01)
+        height_values = tc.arange(float(bmin), float(bmax), 0.001)
         all_positions = []
         all_coordinates = []
         all_measures = []
