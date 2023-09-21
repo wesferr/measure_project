@@ -18,3 +18,4 @@ src/tests
 src/BKP
 .ipynb_checkpoints/*
 output/*
+imgs/
