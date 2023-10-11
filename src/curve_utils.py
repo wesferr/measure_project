@@ -6,13 +6,21 @@ class CurveUtils():
     @classmethod
     def calculate_distances(cls, positions, closed=True):
         if positions.numel() <= 3:
-            return 0
+            return tc.FloatTensor(0)
         distances = tc.cdist(positions, positions)
         if closed is True:
             distance = distances.diagonal(1).sum()
         else:
             bigger = distances.diagonal(1).max()
             distance = distances.diagonal(1).sum() - bigger
+        return distance*100
+    
+    @classmethod
+    def linear_distance(cls, positions):
+        higher_dimension = positions.std(axis=0).argmax()
+        positions = positions[positions[:, higher_dimension].argsort()]
+        distances = tc.cdist(positions, positions)
+        distance = distances.diagonal(1).sum()
         return distance*100
 
     @classmethod
